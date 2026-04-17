@@ -1,6 +1,7 @@
 import { defineManifest } from '@crxjs/vite-plugin';
 
-export default defineManifest({
+export function createManifest(clientId: string) {
+  return defineManifest({
   manifest_version: 3,
   name: 'MailClean Pro',
   version: '1.0.0',
@@ -12,7 +13,7 @@ export default defineManifest({
     'https://oauth2.googleapis.com/*',
   ],
   oauth2: {
-    client_id: process.env.VITE_OAUTH_CLIENT_ID ?? '',
+    client_id: clientId,
     scopes: [
       'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/userinfo.email',
@@ -50,4 +51,5 @@ export default defineManifest({
   //   '48': 'icons/icon48.png',
   //   '128': 'icons/icon128.png',
   // },
-});
+  });
+}

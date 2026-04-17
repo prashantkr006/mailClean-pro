@@ -1,10 +1,14 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { crx } from '@crxjs/vite-plugin';
 import { resolve } from 'path';
-import manifest from './manifest.config';
+import { createManifest } from './manifest.config';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const manifest = createManifest(env.VITE_OAUTH_CLIENT_ID ?? '');
+
+  return {
   plugins: [
     react(),
     crx({ manifest }),
@@ -30,4 +34,5 @@ export default defineConfig({
     strictPort: true,
     hmr: { port: 5173 },
   },
+  };
 });
