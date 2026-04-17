@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { useScanStore } from '@/stores/scanStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -15,6 +15,7 @@ export function Dashboard() {
   const { signedIn, user } = useAuthStore();
   const { summary, isScanning, progress, scanError } = useScanStore();
   const { settings: _settings } = useSettingsStore();
+  const scanPortRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
     const listener = (message: BGMessage) => {
@@ -39,17 +40,29 @@ export function Dashboard() {
           useScanStore.getState().setScanning(false);
           useScanStore.getState().setProgress(null);
           useScanStore.getState().setScanError(null);
+          scanPortRef.current?.disconnect();
+          scanPortRef.current = null;
           break;
         case 'SCAN_ERROR':
           useScanStore.getState().setScanning(false);
           useScanStore.getState().setProgress(null);
           useScanStore.getState().setScanError(message.message);
+          scanPortRef.current?.disconnect();
+          scanPortRef.current = null;
           break;
         case 'TRASH_COMPLETE':
         case 'TRASH_PROGRESS':
         case 'TRASH_ERROR':
         case 'UNSUBSCRIBE_COMPLETE':
         case 'UNSUBSCRIBE_ERROR':
+        case 'BULK_UNSUBSCRIBE_PROGRESS':
+          break;
+        case 'BULK_UNSUBSCRIBE_COMPLETE':
+          useScanStore.getState().removeEmails(
+            useScanStore.getState().emails
+              .filter((e) => e.categories.includes('inactive_subscription'))
+              .map((e) => e.id),
+          );
           break;
       }
     };
@@ -71,6 +84,9 @@ export function Dashboard() {
   }, []);
 
   const handleStartScan = () => {
+    // Open a long-lived port to keep the service worker alive for the full scan duration.
+    scanPortRef.current?.disconnect();
+    scanPortRef.current = chrome.runtime.connect({ name: 'scan-keepalive' });
     useScanStore.getState().setScanning(true);
     useScanStore.getState().setScanError(null);
     chrome.runtime.sendMessage({ type: 'SCAN_START', options: {} });

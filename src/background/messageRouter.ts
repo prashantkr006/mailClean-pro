@@ -2,7 +2,7 @@ import type { UIMessage, MessageResponse } from '@/types/messages';
 import { assertNever } from '@/types/messages';
 import { performScan } from './scan';
 import { performTrash } from './trash';
-import { performUnsubscribe } from './unsubscribe';
+import { performUnsubscribe, performBulkUnsubscribe } from './unsubscribe';
 import { getAuthStatusPayload, performSignIn, performSignOut } from './auth';
 
 export function messageRouter(
@@ -25,6 +25,11 @@ export function messageRouter(
 
         case 'UNSUBSCRIBE':
           await performUnsubscribe(message.messageId);
+          sendResponse({ ok: true });
+          break;
+
+        case 'BULK_UNSUBSCRIBE':
+          await performBulkUnsubscribe(message.emails);
           sendResponse({ ok: true });
           break;
 

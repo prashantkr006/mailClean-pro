@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { FixedSizeList as List } from 'react-window';
-import { Trash2 } from 'lucide-react';
+import { Trash2, MailX, Loader2 } from 'lucide-react';
 import { useScanStore } from '@/stores/scanStore';
 import { EmailCard } from './EmailCard';
 import { CategoryFilter } from './CategoryFilter';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button';
 import { formatBytes, formatNumber } from '@/utils/format';
 import type { EmailSummary, Category, CleanupBucket } from '@/types/domain';
 import { CATEGORIES } from '@/types/domain';
+import type { BGMessage } from '@/types/messages';
 
 export function ReviewPanel() {
   const { summary, emails } = useScanStore();
@@ -16,6 +17,7 @@ export function ReviewPanel() {
   const [selectedBucket, setSelectedBucket] = useState<CleanupBucket | 'all'>('recommended');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pendingTrash, setPendingTrash] = useState<{ ids: string[]; bytes: number } | null>(null);
+  const [bulkUnsubProgress, setBulkUnsubProgress] = useState<{ done: number; total: number } | null>(null);
 
   const filteredEmails = useMemo(() => {
     return emails.filter((email) => {
@@ -25,7 +27,6 @@ export function ReviewPanel() {
     });
   }, [emails, selectedCategory, selectedBucket]);
 
-  // Per-category counts and storage for recommended emails
   const categoryStats = useMemo(() => {
     const recommended = emails.filter((e) => e.cleanupBucket === 'recommended');
     const stats: Record<string, { count: number; bytes: number }> = {};
@@ -48,6 +49,12 @@ export function ReviewPanel() {
     [recommendedEmails],
   );
 
+  // All emails that have a List-Unsubscribe header (can be bulk-unsubscribed)
+  const unsubscribableEmails = useMemo(
+    () => emails.filter((e) => e.listUnsubscribeHeader),
+    [emails],
+  );
+
   const handleSelectAll = () => {
     if (selectedIds.size === filteredEmails.length) {
       setSelectedIds(new Set());
@@ -57,9 +64,7 @@ export function ReviewPanel() {
   };
 
   const requestTrash = (ids: string[]) => {
-    const bytes = emails
-      .filter((e) => ids.includes(e.id))
-      .reduce((s, e) => s + e.sizeEstimate, 0);
+    const bytes = emails.filter((e) => ids.includes(e.id)).reduce((s, e) => s + e.sizeEstimate, 0);
     setPendingTrash({ ids, bytes });
   };
 
@@ -79,6 +84,23 @@ export function ReviewPanel() {
     setSelectedIds(next);
   };
 
+  const handleBulkUnsubscribe = () => {
+    if (unsubscribableEmails.length === 0 || bulkUnsubProgress) return;
+    setBulkUnsubProgress({ done: 0, total: unsubscribableEmails.length });
+
+    const listener = (message: BGMessage) => {
+      if (message.type === 'BULK_UNSUBSCRIBE_PROGRESS') {
+        setBulkUnsubProgress({ done: message.done, total: message.total });
+      } else if (message.type === 'BULK_UNSUBSCRIBE_COMPLETE') {
+        chrome.runtime.onMessage.removeListener(listener);
+        useScanStore.getState().removeEmails(unsubscribableEmails.map((e) => e.id));
+        setBulkUnsubProgress(null);
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    chrome.runtime.sendMessage({ type: 'BULK_UNSUBSCRIBE', emails: unsubscribableEmails });
+  };
+
   if (!summary) {
     return (
       <div className="text-center py-12 text-ink-muted">
@@ -96,6 +118,34 @@ export function ReviewPanel() {
           onConfirm={confirmTrash}
           onCancel={() => setPendingTrash(null)}
         />
+      )}
+
+      {/* Bulk unsubscribe banner */}
+      {unsubscribableEmails.length > 0 && (
+        <div className="mb-5 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+          <div>
+            <p className="text-sm font-medium text-amber-900">
+              {formatNumber(unsubscribableEmails.length)} emails with List-Unsubscribe headers
+            </p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Subscriptions you can automatically unsubscribe from and delete in one step.
+            </p>
+          </div>
+          {bulkUnsubProgress ? (
+            <div className="flex items-center gap-2 text-sm text-amber-800 flex-shrink-0 ml-4">
+              <Loader2 size={14} className="animate-spin" />
+              {formatNumber(bulkUnsubProgress.done)} / {formatNumber(bulkUnsubProgress.total)}
+            </div>
+          ) : (
+            <button
+              onClick={handleBulkUnsubscribe}
+              className="flex-shrink-0 ml-4 inline-flex items-center gap-1.5 text-sm bg-amber-600 text-white px-3 py-1.5 rounded-md hover:bg-amber-700 font-medium"
+            >
+              <MailX size={14} />
+              Unsubscribe All &amp; Delete
+            </button>
+          )}
+        </div>
       )}
 
       {/* Category summary cards */}
@@ -130,10 +180,7 @@ export function ReviewPanel() {
                     setSelectedBucket('recommended');
                   }}
                 >
-                  <div
-                    className="w-2 h-2 rounded-full mb-2"
-                    style={{ backgroundColor: info.color }}
-                  />
+                  <div className="w-2 h-2 rounded-full mb-2" style={{ backgroundColor: info.color }} />
                   <p className="text-sm font-medium text-ink">{info.label}</p>
                   <p className="text-lg font-bold text-ink mt-0.5">{formatNumber(stats.count)}</p>
                   <p className="text-xs text-ink-muted">{formatBytes(stats.bytes)}</p>
@@ -161,7 +208,6 @@ export function ReviewPanel() {
 
       {emails.length > 0 && (
         <>
-          {/* Filters */}
           <div className="flex flex-wrap gap-3 mb-4">
             <CategoryFilter
               selectedCategory={selectedCategory}
@@ -179,7 +225,6 @@ export function ReviewPanel() {
             </select>
           </div>
 
-          {/* Bulk actions */}
           <div className="flex justify-between items-center mb-3">
             <div className="flex items-center gap-3">
               <Button variant="outline" size="sm" onClick={handleSelectAll}>
@@ -188,8 +233,8 @@ export function ReviewPanel() {
                   : 'Select All'}
               </Button>
               <span className="text-sm text-ink-muted">
-                {filteredEmails.length} emails
-                {selectedIds.size > 0 && `, ${selectedIds.size} selected`}
+                {formatNumber(filteredEmails.length)} emails
+                {selectedIds.size > 0 && `, ${formatNumber(selectedIds.size)} selected`}
               </span>
             </div>
             {selectedIds.size > 0 && (

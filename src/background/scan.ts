@@ -10,7 +10,7 @@ import type { GmailMessage } from '@/types/gmail';
 import { getSettings } from './settings';
 import { safeBroadcast } from './broadcast';
 
-const FETCH_CHUNK = 2000; // emails per streaming chunk
+const FETCH_CHUNK = 2000;
 
 export async function performScan(options: ScanOptions = {}): Promise<void> {
   const tokenResult = await gmailClient.getToken();
@@ -22,9 +22,9 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
   const settings = await getSettings();
   const startTime = Date.now();
 
+  // Phase 1: collect ALL message IDs via pagination
   safeBroadcast({ type: 'SCAN_PROGRESS', scanned: 0, total: 0, phase: 'Listing messages…' });
 
-  // Phase 1: collect all message IDs
   const messageIds: string[] = [];
   let totalEstimate = 0;
 
@@ -38,7 +38,7 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
         type: 'SCAN_PROGRESS',
         scanned: messageIds.length,
         total: totalEstimate,
-        phase: 'Listing messages…',
+        phase: `Listing messages… (${messageIds.length.toLocaleString()} found)`,
       });
     },
   })) {
@@ -52,13 +52,10 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
     safeBroadcast({
       type: 'SCAN_COMPLETE',
       summary: {
-        totalScanned: 0,
-        totalFlagged: 0,
+        totalScanned: 0, totalFlagged: 0,
         categoryCounts: { promotional: 0, old_unread: 0, bulk_sender: 0, inactive_subscription: 0, newsletter: 0, keep: 0 },
-        storageReclaimableBytes: 0,
-        topSenders: [],
-        scanDurationMs: Date.now() - startTime,
-        scanCompletedAt: Date.now(),
+        storageReclaimableBytes: 0, topSenders: [],
+        scanDurationMs: Date.now() - startTime, scanCompletedAt: Date.now(),
       },
       emails: [],
     });
@@ -67,7 +64,7 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
 
   const total = messageIds.length;
 
-  // Phase 2: fetch + classify in chunks, streaming partial results
+  // Phase 2: fetch metadata in chunks — builds sender stats, no classification yet
   const tracker = new SenderStatsTracker();
   const rawMessages: GmailMessage[] = [];
   let fetched = 0;
@@ -80,7 +77,7 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
         type: 'SCAN_PROGRESS',
         scanned: fetched + done,
         total,
-        phase: `Fetching details… (${fetched + done} / ${total})`,
+        phase: `Fetching details… (${(fetched + done).toLocaleString()} / ${total.toLocaleString()})`,
       });
     });
 
@@ -94,22 +91,20 @@ export async function performScan(options: ScanOptions = {}): Promise<void> {
       rawMessages.push(msg);
     }
     fetched += result.value.length;
-
-    // Classify everything fetched so far (sender stats improve each chunk)
-    const partialEmails = classifyAll(rawMessages, tracker, settings);
-    const partialSummary = buildSummary(partialEmails, tracker, startTime, false);
-
-    if (i + FETCH_CHUNK < total) {
-      // Intermediate update — keeps isScanning=true in the UI
-      safeBroadcast({ type: 'SCAN_UPDATE', summary: partialSummary, emails: partialEmails });
-    }
   }
 
-  // Final pass: reclassify with complete sender stats
-  const finalEmails = classifyAll(rawMessages, tracker, settings);
-  const finalSummary = buildSummary(finalEmails, tracker, startTime, true);
+  // Phase 3: classify all emails with complete sender stats (single pass, O(n))
+  safeBroadcast({
+    type: 'SCAN_PROGRESS',
+    scanned: total,
+    total,
+    phase: `Classifying ${total.toLocaleString()} emails…`,
+  });
 
-  safeBroadcast({ type: 'SCAN_COMPLETE', summary: finalSummary, emails: finalEmails });
+  const emails = classifyAll(rawMessages, tracker, settings);
+  const summary = buildSummary(emails, tracker, startTime);
+
+  safeBroadcast({ type: 'SCAN_COMPLETE', summary, emails });
 }
 
 function classifyAll(
@@ -117,9 +112,7 @@ function classifyAll(
   tracker: SenderStatsTracker,
   settings: Awaited<ReturnType<typeof getSettings>>,
 ): EmailSummary[] {
-  const emails: EmailSummary[] = [];
-
-  for (const message of messages) {
+  return messages.map((message) => {
     const headers = message.payload?.headers ?? [];
     const fromHeader = getHeader(headers, 'From') ?? '';
     const subject = getHeader(headers, 'Subject') ?? '';
@@ -146,9 +139,7 @@ function classifyAll(
       neverOpenedFromSender: neverOpened,
     });
 
-    const bucket = getCleanupBucket(score, settings.aggressiveness);
-
-    emails.push({
+    return {
       id: message.id,
       threadId: message.threadId,
       subject,
@@ -161,32 +152,26 @@ function classifyAll(
       sizeEstimate: message.sizeEstimate ?? 0,
       categories,
       cleanupScore: score,
-      cleanupBucket: bucket,
+      cleanupBucket: getCleanupBucket(score, settings.aggressiveness),
       ...(listUnsubscribe && { listUnsubscribeHeader: listUnsubscribe }),
       ...(listUnsubscribePost && { listUnsubscribePostHeader: listUnsubscribePost }),
       snippet: message.snippet ?? '',
-    });
-  }
-
-  return emails;
+    };
+  });
 }
 
 function buildSummary(
   emails: EmailSummary[],
   tracker: SenderStatsTracker,
   startTime: number,
-  final: boolean,
 ): ScanSummary {
   const categoryCounts: Record<Category, number> = {
     promotional: 0, old_unread: 0, bulk_sender: 0, inactive_subscription: 0, newsletter: 0, keep: 0,
   };
 
   for (const email of emails) {
-    if (email.categories.length === 0) {
-      categoryCounts.keep += 1;
-    } else {
-      for (const cat of email.categories) categoryCounts[cat] += 1;
-    }
+    if (email.categories.length === 0) categoryCounts.keep += 1;
+    else for (const cat of email.categories) categoryCounts[cat] += 1;
   }
 
   const flagged = emails.filter((e) => e.cleanupBucket !== 'keep');
@@ -197,7 +182,7 @@ function buildSummary(
     categoryCounts,
     storageReclaimableBytes: flagged.reduce((s, e) => s + e.sizeEstimate, 0),
     topSenders: tracker.getTopSenders(10),
-    scanDurationMs: final ? Date.now() - startTime : 0,
-    scanCompletedAt: final ? Date.now() : 0,
+    scanDurationMs: Date.now() - startTime,
+    scanCompletedAt: Date.now(),
   };
 }

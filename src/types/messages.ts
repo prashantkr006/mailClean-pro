@@ -5,6 +5,7 @@ export type UIMessage =
   | { type: 'SCAN_START'; options: ScanOptions }
   | { type: 'TRASH_EMAILS'; ids: string[] }
   | { type: 'UNSUBSCRIBE'; messageId: string }
+  | { type: 'BULK_UNSUBSCRIBE'; emails: EmailSummary[] }
   | { type: 'AUTH_REQUEST' }
   | { type: 'AUTH_SIGN_OUT' }
   | { type: 'GET_AUTH_STATUS' }
@@ -21,6 +22,8 @@ export type BGMessage =
   | { type: 'TRASH_ERROR'; message: string }
   | { type: 'UNSUBSCRIBE_COMPLETE'; messageId: string }
   | { type: 'UNSUBSCRIBE_ERROR'; messageId: string; message: string }
+  | { type: 'BULK_UNSUBSCRIBE_PROGRESS'; done: number; total: number }
+  | { type: 'BULK_UNSUBSCRIBE_COMPLETE'; count: number; failedCount: number }
   | { type: 'AUTH_STATUS'; signedIn: boolean; user?: UserProfile };
 
 /** Union of all messages (for shared listener typings) */

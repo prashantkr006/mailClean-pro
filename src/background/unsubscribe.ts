@@ -1,5 +1,6 @@
 import { gmailClient } from '@/services/gmail/GmailClient';
 import { parseUnsubscribeHeaders, extractUnsubscribeUrl } from '@/services/gmail/headerParser';
+import type { EmailSummary } from '@/types/domain';
 import { safeBroadcast } from './broadcast';
 
 export async function performUnsubscribe(messageId: string): Promise<void> {
@@ -49,4 +50,35 @@ export async function performUnsubscribe(messageId: string): Promise<void> {
 
   await gmailClient.batchTrash([messageId]);
   safeBroadcast({ type: 'UNSUBSCRIBE_COMPLETE', messageId });
+}
+
+/**
+ * Bulk unsubscribe: uses already-scanned email metadata so no extra API calls needed.
+ * - RFC 8058 emails (listUnsubscribePostHeader set): silent one-click POST, then trash
+ * - Others: just trash (user has already chosen to clean them)
+ */
+export async function performBulkUnsubscribe(emails: EmailSummary[]): Promise<void> {
+  const total = emails.length;
+  let done = 0;
+  let failedCount = 0;
+
+  safeBroadcast({ type: 'BULK_UNSUBSCRIBE_PROGRESS', done: 0, total });
+
+  for (const email of emails) {
+    // RFC 8058 one-click — silent POST, no tab needed
+    if (email.listUnsubscribePostHeader && email.listUnsubscribeHeader) {
+      const { httpUrl } = extractUnsubscribeUrl(email.listUnsubscribeHeader);
+      if (httpUrl) {
+        const result = await gmailClient.oneClickUnsubscribe(httpUrl, email.listUnsubscribePostHeader);
+        if (!result.ok) failedCount++;
+      }
+    }
+    // Trash regardless — user explicitly wants these gone
+    await gmailClient.batchTrash([email.id]);
+
+    done++;
+    safeBroadcast({ type: 'BULK_UNSUBSCRIBE_PROGRESS', done, total });
+  }
+
+  safeBroadcast({ type: 'BULK_UNSUBSCRIBE_COMPLETE', count: done, failedCount });
 }
