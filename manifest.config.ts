@@ -12,7 +12,7 @@ export default defineManifest({
     'https://oauth2.googleapis.com/*',
   ],
   oauth2: {
-    client_id: '352276663697-clkiqqhh261ee9qsiq96nlii44i0mufr.apps.googleusercontent.com',
+    client_id: process.env.VITE_OAUTH_CLIENT_ID ?? '',
     scopes: [
       'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/userinfo.email',
